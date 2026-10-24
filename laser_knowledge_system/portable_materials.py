@@ -17,6 +17,7 @@ from laser_knowledge_system.domain.materials import MaterialFamily, MaterialReco
 PACKAGE_FILENAME = "data.json"
 PREVIEW_FILENAME = "preview.png"
 DRAFTS_FILENAME = "open_records.json"
+EXPERIMENT_DRAFTS_FILENAME = "open_experiments.json"
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,6 +184,36 @@ def save_open_record(root: Path, data: dict[str, Any]) -> None:
 def clear_open_record(root: Path) -> None:
     source = root / DRAFTS_FILENAME
     if source.exists():
+        source.unlink()
+
+
+def load_experiment_drafts(root: Path) -> list[dict[str, Any]]:
+    """Return unfinished experiment batches, newest first.
+
+    Experiment rows are intentionally stored outside SQLite: they survive an app
+    restart even when a user has not yet chosen a winning preset.
+    """
+    source = root / EXPERIMENT_DRAFTS_FILENAME
+    try:
+        payload = json.loads(source.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, list) else []
+    except (OSError, json.JSONDecodeError):
+        return []
+
+
+def save_experiment_draft(root: Path, draft: dict[str, Any]) -> None:
+    """Upsert a named experiment batch without disturbing other open batches."""
+    drafts = [item for item in load_experiment_drafts(root) if item.get("id") != draft.get("id")]
+    drafts.insert(0, draft)
+    (root / EXPERIMENT_DRAFTS_FILENAME).write_text(json.dumps(drafts, indent=2), encoding="utf-8")
+
+
+def clear_experiment_draft(root: Path, draft_id: str) -> None:
+    drafts = [item for item in load_experiment_drafts(root) if item.get("id") != draft_id]
+    source = root / EXPERIMENT_DRAFTS_FILENAME
+    if drafts:
+        source.write_text(json.dumps(drafts, indent=2), encoding="utf-8")
+    elif source.exists():
         source.unlink()
 
 

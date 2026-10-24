@@ -14,7 +14,7 @@ from laser_knowledge_system.domain.notebook import NotebookEntry
 from laser_knowledge_system.domain.presets import Preset
 from laser_knowledge_system.domain.processes import ParameterValueType, ProcessDefinition, ProcessType, standard_engraving_defaults, standard_engraving_parameters
 from laser_knowledge_system.portable import export_experiment, import_experiment
-from laser_knowledge_system.portable_materials import MaterialPackage, clear_open_record, delete_package, find_profile, import_profiles, load_open_record, save_open_record, scan_packages, sync_vault, update_package, vault_path, write_package
+from laser_knowledge_system.portable_materials import MaterialPackage, clear_experiment_draft, clear_open_record, delete_package, find_profile, import_profiles, load_experiment_drafts, load_open_record, save_experiment_draft, save_open_record, scan_packages, sync_vault, update_package, vault_path, write_package
 
 STYLE = """QMainWindow,QWidget{background:#F6F7F6;color:#17211D;font-family:'Segoe UI';}QFrame#sidebar,QFrame#sidebar QWidget{background:#16231E;}QFrame#card{background:#FFFFFF;border:1px solid #D3DBD6;border-radius:10px;}QFrame#sidebar QLabel,QLabel#brand,QFrame#sidebar QLabel#muted{color:#E7F0EA;}QLabel#brand{font-size:20px;font-weight:700;}QLabel#muted{color:#66756D;font-size:12px;}QLabel#title{font-size:28px;font-weight:700;color:#17211D;}QLabel#subtitle{color:#4E5F55;font-size:14px;}QLabel#section{font-size:16px;font-weight:700;}QLabel#metric{color:#17211D;font-size:26px;font-weight:700;}QPushButton{border:1px solid #718078;border-radius:7px;min-height:38px;padding:0 14px;font-weight:600;background:#FFFFFF;color:#17211D;}QPushButton:hover{background:#EDF4EF;}QPushButton:focus,QLineEdit:focus,QComboBox:focus,QTextEdit:focus,QDoubleSpinBox:focus,QSpinBox:focus{border:2px solid #28734A;}QPushButton:disabled{background:#E6EAE7;color:#7A847E;border-color:#CCD3CE;}QPushButton#primary{background:#1E6A42;color:white;border-color:#1E6A42;}QPushButton#primary:hover{background:#175636;}QPushButton#secondary{background:#FFFFFF;color:#17211D;border-color:#718078;}QFrame#sidebar QPushButton#nav{background:transparent;color:#E7F0EA;border:0;text-align:left;min-height:42px;}QFrame#sidebar QPushButton#nav:hover,QFrame#sidebar QPushButton#nav:checked{background:#294238;color:#FFFFFF;}QLineEdit,QComboBox,QTextEdit,QDoubleSpinBox,QSpinBox{background:white;border:1px solid #8A9890;border-radius:7px;padding:8px;}QTableWidget{background:white;alternate-background-color:#F1F5F2;border:1px solid #D3DBD6;border-radius:8px;}QTableWidget::item:selected{background:#D7EBDD;color:#17211D;}QHeaderView::section{background:#E8EFEA;border:0;padding:9px;font-weight:700;}QScrollArea{border:0;}"""
 
@@ -239,7 +239,8 @@ class MaterialLibraryPage(QWidget):
         self.search=QLineEdit(); self.search.setPlaceholderText("Search DB for Materials"); layout.addWidget(self.search); self.search.textChanged.connect(self._render); self.recent_row=QHBoxLayout(); layout.addLayout(self.recent_row)
         box,inner=card(); self.status=QLabel(); self.status.setObjectName("subtitle"); inner.addWidget(self.status); self.material_buttons=QVBoxLayout(); self.material_buttons.setSpacing(8); inner.addLayout(self.material_buttons); inner.addStretch(); layout.addWidget(box,stretch=1); self.refresh()
     def refresh(self):
-        self.packages=sync_vault(self.repo,self.vault); self._render_recent(); self._render()
+        # The Library is the published/global view. Personal recordings belong in Records.
+        self.packages=[package for package in sync_vault(self.repo,self.vault) if package.data.get("scope", "global") == "global"]; self._render_recent(); self._render()
     def _render_recent(self):
         while self.recent_row.count():
             item=self.recent_row.takeAt(0)
@@ -293,7 +294,9 @@ class MaterialLibraryPage(QWidget):
         if table.currentRow()<0: QMessageBox.information(parent,"Choose a profile","Select a variable set to edit."); return
         package=table.item(table.currentRow(),0).data(Qt.ItemDataRole.UserRole); editor=MaterialFormDialog(self.vault.parent,parent,package.data)
         if editor.exec()!=QDialog.DialogCode.Accepted:return
-        try: update_package(package,editor.payload(),editor.image_path); self.refresh(); parent.accept()
+        try:
+            payload=editor.payload(); payload["scope"]=package.data.get("scope", "global")
+            update_package(package,payload,editor.image_path); self.refresh(); parent.accept()
         except (OSError,ValueError) as error: QMessageBox.warning(parent,"Could not update profile",str(error))
     def delete_profile(self,table,parent):
         if table.currentRow()<0: QMessageBox.information(parent,"Choose a profile","Select a variable set to delete."); return
@@ -304,51 +307,93 @@ class MaterialLibraryPage(QWidget):
 
 
 class ExperimentPage(QWidget):
-    """Try a selected global profile and publish the tested result back to Library."""
+    """Persistent A/B/C tests. A row captures every print parameter at its creation."""
+    TOOLS=("Line To Line Tracing","1bit B/W Dithering","Vectorize!","Centerline","Passthrough")
     def __init__(self, repo, root):
-        super().__init__(); self.repo,self.root=repo,Path(root); self.vault=vault_path(self.root); layout=QVBoxLayout(self); layout.setContentsMargins(36,32,36,32); layout.setSpacing(18); title=QLabel("Experiments"); title.setObjectName("title"); layout.addWidget(title); subtitle=QLabel("Set image parameters exactly as you would before printing. The conversion tool controls which extra options appear."); subtitle.setObjectName("subtitle"); subtitle.setWordWrap(True); layout.addWidget(subtitle); form=QFormLayout(); self.profile=QComboBox(); self.material=QLineEdit(); self.material.setPlaceholderText("Leave blank to use selected profile, or type a new material"); self.speed=QSpinBox(); self.speed.setRange(1,100000); self.power=QSpinBox(); self.power.setRange(1,100); self.notes=QTextEdit(); self.notes.setMinimumHeight(60); form.addRow("Start from Library (optional)",self.profile); form.addRow("New material name",self.material); form.addRow("Test speed (mm/min)",self.speed); form.addRow("Test power (%)",self.power); layout.addLayout(form)
+        super().__init__(); self.repo,self.root=repo,Path(root); self.vault=vault_path(self.root); self.session_id=str(uuid4())
+        layout=QVBoxLayout(self); layout.setContentsMargins(36,32,36,32); layout.setSpacing(18)
+        title=QLabel("Experiments"); title.setObjectName("title"); layout.addWidget(title)
+        subtitle=QLabel("Each A/B/C row keeps its full pre-print image and conversion settings. Batches remain open until you publish a winner or clear them."); subtitle.setObjectName("subtitle"); subtitle.setWordWrap(True); layout.addWidget(subtitle)
+        form=QFormLayout(); self.profile=QComboBox(); self.material=QLineEdit(); self.material.setPlaceholderText("Type a material to start a new experiment"); self.speed=QSpinBox(); self.speed.setRange(1,100000); self.speed.setValue(1200); self.power=QSpinBox(); self.power.setRange(1,100); self.power.setValue(80); self.notes=QTextEdit(); self.notes.setMinimumHeight(60)
+        form.addRow("Start from global Library (optional)",self.profile); form.addRow("Material name *",self.material); form.addRow("Test speed (mm/min)",self.speed); form.addRow("Test power (%)",self.power); layout.addLayout(form)
         image_box,image_layout=card(); image_title=QLabel("Image parameters"); image_title.setObjectName("section"); image_layout.addWidget(image_title); image_form=QFormLayout(); self.resize=QComboBox(); self.resize.addItems(["Smooth (HQ Bicubic)","Nearest neighbour","Bilinear"]); self.grayscale=QComboBox(); self.grayscale.addItems(["Weighted Average","Simple Average","Luminance"]); self.brightness=QSlider(Qt.Orientation.Horizontal); self.brightness.setRange(-100,100); self.contrast=QSlider(Qt.Orientation.Horizontal); self.contrast.setRange(-100,100); self.white_clip=QSlider(Qt.Orientation.Horizontal); self.white_clip.setRange(0,100); self.black_white=QCheckBox("B&W"); image_form.addRow("Resize",self.resize); image_form.addRow("Grayscale",self.grayscale); image_form.addRow("Brightness",self.brightness); image_form.addRow("Contrast",self.contrast); image_form.addRow("White clip",self.white_clip); image_form.addRow("",self.black_white); image_layout.addLayout(image_form); layout.addWidget(image_box)
-        tool_box,tool_layout=card(); tool_title=QLabel("Conversion tool"); tool_title.setObjectName("section"); tool_layout.addWidget(tool_title); self.conversion=QComboBox(); self.conversion.addItems(["Line To Line Tracing","1bit B/W Dithering","Vectorize!","Centerline","Passthrough"]); tool_layout.addWidget(self.conversion); self.tool_options=QFrame(); self.tool_form=QFormLayout(self.tool_options); self.direction=QComboBox(); self.direction.addItems(["Horizontal","Vertical","Diagonal"]); self.quality=QDoubleSpinBox(); self.quality.setRange(.1,100); self.quality.setValue(15); self.line_preview=QCheckBox("Line preview"); self.line_preview.setChecked(True); self.dither_method=QComboBox(); self.dither_method.addItems(["Floyd-Steinberg","Jarvis","Atkinson","Stucki"]); self.tool_form.addRow("Direction",self.direction); self.tool_form.addRow("Quality (lines/mm)",self.quality); self.tool_form.addRow("",self.line_preview); self.tool_form.addRow("Dithering method",self.dither_method); tool_layout.addWidget(self.tool_options); layout.addWidget(tool_box); self.conversion.currentTextChanged.connect(self._tool_changed); self._tool_changed(self.conversion.currentText()); form.addRow("Test notes",self.notes); layout.addLayout(form); actions=QHBoxLayout(); add=QPushButton("+ Add test row"); add.setObjectName("secondary"); add.clicked.connect(self.add_test); actions.addWidget(add); copy=QPushButton("Copy selected values"); copy.setObjectName("secondary"); copy.clicked.connect(self.copy_selected); actions.addWidget(copy); save=QPushButton("Name and publish selected winner"); save.setObjectName("primary"); save.clicked.connect(self.save_preset); actions.addWidget(save); actions.addStretch(); layout.addLayout(actions); self.tests=QTableWidget(0,6); self.tests.setHorizontalHeaderLabels(["Tag","Material","Conversion","Speed","Power","Result / comparison"]); self.tests.verticalHeader().setVisible(False); self.tests.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows); self.tests.setEditTriggers(QTableWidget.EditTrigger.DoubleClicked|QTableWidget.EditTrigger.SelectedClicked); self.tests.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch); layout.addWidget(self.tests,stretch=1); self.status=QLabel(); self.status.setObjectName("subtitle"); layout.addWidget(self.status); self.profile.currentIndexChanged.connect(self._load_profile); self.refresh()
+        tool_box,tool_layout=card(); tool_title=QLabel("Conversion tool"); tool_title.setObjectName("section"); tool_layout.addWidget(tool_title); self.conversion=QComboBox(); self.conversion.addItems(self.TOOLS); tool_layout.addWidget(self.conversion); self.tool_options=QFrame(); self.tool_form=QFormLayout(self.tool_options); self.direction=QComboBox(); self.direction.addItems(["Horizontal","Vertical","Diagonal"]); self.quality=QDoubleSpinBox(); self.quality.setRange(.1,100); self.quality.setValue(15); self.line_preview=QCheckBox("Line preview"); self.line_preview.setChecked(True); self.dither_method=QComboBox(); self.dither_method.addItems(["Floyd-Steinberg","Jarvis","Atkinson","Stucki"]); self.tool_form.addRow("Direction",self.direction); self.tool_form.addRow("Quality (lines/mm)",self.quality); self.tool_form.addRow("",self.line_preview); self.tool_form.addRow("Dithering method",self.dither_method); tool_layout.addWidget(self.tool_options); layout.addWidget(tool_box)
+        form.addRow("Test notes / result",self.notes); layout.addLayout(form)
+        actions=QHBoxLayout(); add=QPushButton("+ Add test row"); add.setObjectName("secondary"); add.clicked.connect(self.add_test); actions.addWidget(add); copy=QPushButton("Copy selected values"); copy.setObjectName("secondary"); copy.clicked.connect(self.copy_selected); actions.addWidget(copy); save=QPushButton("Name and publish selected winner"); save.setObjectName("primary"); save.clicked.connect(self.save_preset); actions.addWidget(save); clear=QPushButton("Clear this batch"); clear.setObjectName("secondary"); clear.clicked.connect(self.clear_batch); actions.addWidget(clear); actions.addStretch(); layout.addLayout(actions)
+        self.tests=QTableWidget(0,7); self.tests.setHorizontalHeaderLabels(["Tag","Material","Conversion","Speed","Power","Parameter summary","Result / comparison"]); self.tests.verticalHeader().setVisible(False); self.tests.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows); self.tests.setEditTriggers(QTableWidget.EditTrigger.DoubleClicked|QTableWidget.EditTrigger.SelectedClicked); self.tests.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch); self.tests.itemChanged.connect(self._save_batch); layout.addWidget(self.tests,stretch=1)
+        self.status=QLabel(); self.status.setObjectName("subtitle"); layout.addWidget(self.status); self.profile.currentIndexChanged.connect(self._load_profile); self.conversion.currentTextChanged.connect(self._tool_changed); self._tool_changed(self.conversion.currentText()); self.refresh(); self._restore_latest_batch()
     def refresh(self):
-        self.packages=scan_packages(self.vault); current=self.profile.currentData(); self.profile.blockSignals(True); self.profile.clear(); self.profile.addItem("Choose a material profile",None)
+        self.packages=[package for package in scan_packages(self.vault) if package.data.get("scope", "global")=="global"]; current=self.profile.currentData(); self.profile.blockSignals(True); self.profile.clear(); self.profile.addItem("Choose a global material preset",None)
         for package in self.packages:
-            data=package.data; label=f"{data.get('material_name')} / {data.get('conversion_model')} / {data.get('variant_name','Base')}"
-            self.profile.addItem(label,package)
-        index=self.profile.findData(current); self.profile.setCurrentIndex(index if index>=0 else 0); self.profile.blockSignals(False); self._load_profile()
+            data=package.data; self.profile.addItem(f"{data.get('material_name')} / {data.get('conversion_model')} / {data.get('variant_name','Base')}",package)
+        index=self.profile.findData(current); self.profile.setCurrentIndex(index if index>=0 else 0); self.profile.blockSignals(False)
     def _tool_changed(self, tool):
-        line = tool == "Line To Line Tracing"; dither = tool == "1bit B/W Dithering"
-        self.direction.setVisible(line); self.quality.setVisible(line); self.line_preview.setVisible(line); self.dither_method.setVisible(dither)
+        line=tool=="Line To Line Tracing"; dither=tool=="1bit B/W Dithering"
         for row in range(3): self.tool_form.setRowVisible(row,line)
         self.tool_form.setRowVisible(3,dither)
+    def _parameters(self):
+        tool=self.conversion.currentText(); data={"resize":self.resize.currentText(),"grayscale":self.grayscale.currentText(),"brightness":self.brightness.value(),"contrast":self.contrast.value(),"white_clip":self.white_clip.value(),"black_white":self.black_white.isChecked(),"conversion_model":tool,"speed_mm_min":self.speed.value(),"power_percent":self.power.value()}
+        if tool=="Line To Line Tracing": data.update({"direction":self.direction.currentText(),"quality_lines_mm":self.quality.value(),"line_preview":self.line_preview.isChecked()})
+        if tool=="1bit B/W Dithering": data["dithering_method"]=self.dither_method.currentText()
+        return data
+    def _summary(self, data):
+        if data["conversion_model"]=="Line To Line Tracing": return f"{data.get('direction')} · {data.get('quality_lines_mm')} lines/mm"
+        if data["conversion_model"]=="1bit B/W Dithering": return data.get("dithering_method", "Dithering")
+        return f"{data['resize']} · {data['grayscale']}"
     def _load_profile(self):
         package=self.profile.currentData()
         if not package:return
-        self.material.setText(str(package.data.get("material_name",""))); self.conversion.setCurrentText(str(package.data.get("conversion_model","Line To Line Tracing"))); self.speed.setValue(int(package.data.get("speed_mm_min",1200))); self.power.setValue(int(package.data.get("power_percent",80)))
+        data=package.data; self.material.setText(str(data.get("material_name",""))); tool=str(data.get("conversion_model","")); self.conversion.setCurrentText(tool if tool in self.TOOLS else "1bit B/W Dithering" if tool in ("Floyd","Jarvis","Atkinson","Dithering") else "Line To Line Tracing"); self.speed.setValue(int(data.get("speed_mm_min",1200))); self.power.setValue(int(data.get("power_percent",80))); self.resize.setCurrentText(str(data.get("resize",self.resize.currentText()))); self.grayscale.setCurrentText(str(data.get("grayscale",self.grayscale.currentText()))); self.brightness.setValue(int(data.get("brightness",0))); self.contrast.setValue(int(data.get("contrast",0))); self.white_clip.setValue(int(data.get("white_clip",0))); self.black_white.setChecked(bool(data.get("black_white",False))); self.direction.setCurrentText(str(data.get("direction","Horizontal"))); self.quality.setValue(float(data.get("quality_lines_mm",15))); self.line_preview.setChecked(bool(data.get("line_preview",True))); self.dither_method.setCurrentText(str(data.get("dithering_method","Floyd-Steinberg")))
+    def _batch_rows(self):
+        rows=[]
+        for row in range(self.tests.rowCount()):
+            stored=self.tests.item(row,0).data(Qt.ItemDataRole.UserRole) or {}
+            params=dict(stored.get("parameters",{})); params.update({"tag":self.tests.item(row,0).text(),"material_name":self.tests.item(row,1).text(),"conversion_model":self.tests.item(row,2).text(),"speed_mm_min":int(self.tests.item(row,3).text()),"power_percent":int(self.tests.item(row,4).text()),"notes":self.tests.item(row,6).text()})
+            rows.append(params)
+        return rows
+    def _save_batch(self, *_):
+        if not hasattr(self,"tests"): return
+        rows=self._batch_rows()
+        if rows: save_experiment_draft(self.root,{"id":self.session_id,"material_name":self.material.text().strip() or rows[0]["material_name"],"rows":rows})
+    def _restore_latest_batch(self):
+        drafts=load_experiment_drafts(self.root)
+        if not drafts:return
+        draft=drafts[0]; rows=draft.get("rows",[])
+        if not rows:return
+        self.session_id=str(draft.get("id",self.session_id)); self.material.setText(str(draft.get("material_name",rows[0].get("material_name",""))))
+        self.tests.blockSignals(True)
+        for data in rows: self._insert_row(data)
+        self.tests.blockSignals(False); self.status.setText(f"Restored open batch with {len(rows)} test rows.")
+    def _insert_row(self, data):
+        row=self.tests.rowCount(); self.tests.insertRow(row); values=(data.get("tag",chr(65+row)),data.get("material_name",""),data.get("conversion_model",""),data.get("speed_mm_min",0),data.get("power_percent",0),self._summary(data),data.get("notes",""))
+        for column,value in enumerate(values): self.tests.setItem(row,column,QTableWidgetItem(str(value)))
+        self.tests.item(row,0).setData(Qt.ItemDataRole.UserRole,{"parameters":dict(data)})
+    def add_test(self):
+        material=self.material.text().strip()
+        if not material:self.status.setText("Enter a material name first."); return
+        data=self._parameters(); data.update({"tag":chr(65+self.tests.rowCount()),"material_name":material,"notes":self.notes.toPlainText().strip()}); self._insert_row(data); self.tests.setCurrentCell(self.tests.rowCount()-1,0); self._save_batch(); self.status.setText(f"Added Experiment {data['tag']} with its complete print parameters.")
     def save_preset(self):
         row=self.tests.currentRow()
         if row<0:self.status.setText("Add and select a test row to publish."); return
-        package=self.tests.item(row,0).data(Qt.ItemDataRole.UserRole); material=self.tests.item(row,1).text().strip(); conversion=self.tests.item(row,2).text().strip(); name,ok=QInputDialog.getText(self,"Name winning preset","Preset name for this winning result (for example: Dark, Light, Fine Detail):")
-        name=name.strip()
+        stored=self.tests.item(row,0).data(Qt.ItemDataRole.UserRole) or {}; data=dict(stored.get("parameters",{})); data.update({"scope":"global","material_name":self.tests.item(row,1).text().strip(),"conversion_model":self.tests.item(row,2).text().strip(),"speed_mm_min":int(self.tests.item(row,3).text()),"power_percent":int(self.tests.item(row,4).text()),"notes":self.tests.item(row,6).text()})
+        name,ok=QInputDialog.getText(self,"Name winning preset","Preset name (for example: Dark, Light, Fine Detail):"); name=name.strip()
         if not ok:return
-        if not material or not conversion or not name:self.status.setText("Every published test needs material, conversion type, and a preset name."); return
-        data={key:value for key,value in package.data.items() if key not in ("id","image_filename")} if package else {}; data.update({"scope":"global","material_name":material,"conversion_model":conversion,"variant_name":name,"speed_mm_min":int(self.tests.item(row,3).text()),"power_percent":int(self.tests.item(row,4).text()),"notes":self.tests.item(row,5).text()})
+        if not data["material_name"] or not data["conversion_model"] or not name:self.status.setText("Every published test needs material, conversion type, and a preset name."); return
+        data["variant_name"]=name
         try:
-            existing=find_profile(self.vault,material,conversion,name)
-            if existing and QMessageBox.question(self,"Overwrite global preset?",f"{material} / {conversion} / {name} already exists. Replace its saved values with this selected experiment?",QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No)!=QMessageBox.StandardButton.Yes:return
+            existing=find_profile(self.vault,data["material_name"],data["conversion_model"],name)
+            if existing and QMessageBox.question(self,"Overwrite global preset?",f"{data['material_name']} / {data['conversion_model']} / {name} already exists. Replace it with this experiment?",QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No)!=QMessageBox.StandardButton.Yes:return
             if existing:update_package(existing,data)
             else:write_package(self.vault,data)
-            sync_vault(self.repo,self.vault); self.status.setText(f"Saved {data['material_name']} / {data['conversion_model']} / {name} to the global Library."); self.notes.clear(); self.refresh()
+            sync_vault(self.repo,self.vault); self.status.setText(f"Published {data['material_name']} / {data['conversion_model']} / {name} to the global Library."); self.refresh()
         except (OSError,ValueError,RepositoryError) as error:self.status.setText(str(error))
-    def add_test(self):
-        package=self.profile.currentData(); material=self.material.text().strip(); conversion=self.conversion.currentText()
-        if not material:self.status.setText("Enter a material name first."); return
-        row=self.tests.rowCount(); self.tests.insertRow(row); values=(chr(65+row),material,conversion,str(self.speed.value()),str(self.power.value()),self.notes.toPlainText().strip())
-        for column,value in enumerate(values):self.tests.setItem(row,column,QTableWidgetItem(str(value)))
-        self.tests.item(row,0).setData(Qt.ItemDataRole.UserRole,package); self.tests.setCurrentCell(row,0); self.status.setText(f"Added Experiment {chr(65+row)}. Edit speed, power, or result label directly in the table.")
+    def clear_batch(self):
+        if self.tests.rowCount() and QMessageBox.question(self,"Clear open batch?","Remove this unfinished experiment batch? Published presets will not be deleted.",QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No)!=QMessageBox.StandardButton.Yes:return
+        clear_experiment_draft(self.root,self.session_id); self.tests.setRowCount(0); self.session_id=str(uuid4()); self.status.setText("Open experiment batch cleared.")
     def copy_selected(self):
         row=self.tests.currentRow()
         if row<0:self.status.setText("Select a test row to copy."); return
-        text=" | ".join(self.tests.item(row,column).text() for column in range(6)); QApplication.clipboard().setText(text); self.status.setText("Selected test values copied. Paste them into notes or use them as a comparison label.")
+        data=(self.tests.item(row,0).data(Qt.ItemDataRole.UserRole) or {}).get("parameters",{}); text=" | ".join(f"{key}={value}" for key,value in data.items()); QApplication.clipboard().setText(text); self.status.setText("Complete selected test parameters copied.")
 
 
 class RecordsPage(QWidget):
