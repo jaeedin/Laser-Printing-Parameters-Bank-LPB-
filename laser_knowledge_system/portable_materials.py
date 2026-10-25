@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 import csv
 from hashlib import sha1
 from dataclasses import dataclass
@@ -15,14 +14,13 @@ from laser_knowledge_system.domain.materials import MaterialFamily, MaterialReco
 
 
 PACKAGE_FILENAME = "data.json"
-PREVIEW_FILENAME = "preview.png"
 DRAFTS_FILENAME = "open_records.json"
 EXPERIMENT_DRAFTS_FILENAME = "open_experiments.json"
 LEGACY_FIELD_ALIASES = {
     "conversion": ("conversion", "conversion_model", "model", "algorithm"),
-    "direction": ("direction", "preset", "variant_name", "orientation"),
-    "speed": ("speed", "speed_mm_min", "speed_mm_s"),
-    "power": ("power", "power_percent", "power_w"),
+    "direction": ("direction", "orientation"),
+    "speed": ("speed", "speed_mm_min"),
+    "power": ("power", "power_percent"),
     "quality": ("quality", "quality_lines_mm", "quality_percent"),
 }
 
@@ -36,23 +34,45 @@ def _coalesce(data: dict[str, Any], *keys: str) -> Any:
 
 
 def normalize_profile_data(data: dict[str, Any]) -> dict[str, Any]:
-    """Normalize new canonical fields while accepting legacy names for compatibility."""
-    payload = dict(data)
-    payload["material_name"] = str(payload.get("material_name", "")).strip()
-    payload["conversion"] = str(_coalesce(payload, *LEGACY_FIELD_ALIASES["conversion"]) or "Pass-through")
-    payload["direction"] = str(_coalesce(payload, *LEGACY_FIELD_ALIASES["direction"]) or "Horizontal")
-    payload["speed"] = _coalesce(payload, *LEGACY_FIELD_ALIASES["speed"]) or 0
-    payload["power"] = _coalesce(payload, *LEGACY_FIELD_ALIASES["power"]) or 0
-    payload["quality"] = _coalesce(payload, *LEGACY_FIELD_ALIASES["quality"]) or 0
-    for alias in ("conversion_model", "preset", "variant_name", "model", "algorithm", "speed_mm_min", "speed_mm_s", "power_percent", "power_w", "quality_lines_mm", "quality_percent", "blur", "brightness", "contrast", "torque", "dark_light"):
-        payload.pop(alias, None)
-    payload.pop("blur", None)
-    payload.pop("brightness", None)
-    payload.pop("contrast", None)
-    payload.pop("torque", None)
-    payload.pop("presets", None)
-    payload.pop("dark_light", None)
-    payload.pop("light_dark", None)
+    """Return only material identity and the five supported print settings."""
+    direction = _coalesce(data, *LEGACY_FIELD_ALIASES["direction"])
+    if direction is None:
+        legacy_preset = _coalesce(data, "preset", "variant_name")
+        if str(legacy_preset).casefold() in {"horizontal", "vertical", "diagonal", "bidirectional"}:
+            direction = legacy_preset
+    normalized = {
+        "material_name": str(data.get("material_name", "")).strip(),
+        "conversion": _coalesce(data, *LEGACY_FIELD_ALIASES["conversion"]),
+        "direction": direction,
+        "speed": _coalesce(data, *LEGACY_FIELD_ALIASES["speed"]),
+        "power": _coalesce(data, *LEGACY_FIELD_ALIASES["power"]),
+        "quality": _coalesce(data, *LEGACY_FIELD_ALIASES["quality"]),
+    }
+    if data.get("id"):
+        normalized["id"] = str(data["id"])
+    if data.get("scope") in ("global", "user"):
+        normalized["scope"] = data["scope"]
+    return normalized
+
+
+def validate_profile_data(data: dict[str, Any]) -> dict[str, Any]:
+    """Normalize and validate the complete required print-setting record."""
+    payload = normalize_profile_data(data)
+    missing = [key for key in ("material_name", "conversion", "direction", "speed", "power", "quality") if payload.get(key) in (None, "")]
+    if missing:
+        raise ValueError(f"Missing material fields: {', '.join(missing)}.")
+    try:
+        payload["speed"] = float(payload["speed"])
+        payload["power"] = float(payload["power"])
+        payload["quality"] = float(payload["quality"])
+    except (TypeError, ValueError) as error:
+        raise ValueError("Speed, power, and quality must be numeric.") from error
+    if payload["speed"] <= 0 or payload["quality"] <= 0 or payload["power"] < 0:
+        raise ValueError("Speed and quality must be greater than zero; power cannot be negative.")
+    for field in ("conversion", "direction"):
+        payload[field] = str(payload[field]).strip()
+        if not payload[field]:
+            raise ValueError(f"{field.title()} cannot be empty.")
     return payload
 
 
@@ -67,11 +87,6 @@ class MaterialPackage:
     def id(self) -> str:
         return str(self.data["id"])
 
-    @property
-    def preview_path(self) -> Path:
-        return self.folder / str(self.data.get("image_filename", PREVIEW_FILENAME))
-
-
 def vault_path(root: Path | None = None) -> Path:
     """Return (and create) the material vault relative to the application data."""
     path = (root or Path.cwd()) / "materials_vault"
@@ -84,74 +99,29 @@ def _slug(value: str) -> str:
     return slug or "material"
 
 
-def _family_for(name: str) -> MaterialFamily:
-    text = name.lower()
-    if any(word in text for word in ("wood", "plywood", "birch", "mdf", "bamboo")):
-        return MaterialFamily.WOOD
-    if any(word in text for word in ("acrylic", "plastic", "poly", "abs", "petg")):
-        return MaterialFamily.PLASTIC
-    if any(word in text for word in ("steel", "aluminium", "aluminum", "brass", "copper", "metal")):
-        return MaterialFamily.METAL
-    return MaterialFamily.OTHER
-
-
 def _record_from_package(package: MaterialPackage) -> MaterialRecord:
     name = str(package.data["material_name"])
-    family = _family_for(name)
-    thickness = package.data.get("thickness_mm")
-    if family is MaterialFamily.WOOD:
-        properties: dict[str, Any] = {"species": name}
-        if thickness is not None:
-            properties["thickness_mm"] = float(thickness)
-    elif family is MaterialFamily.PLASTIC:
-        properties = {"material_type": name}
-        if thickness is not None:
-            properties["thickness_mm"] = float(thickness)
-    elif family is MaterialFamily.METAL:
-        properties = {"material_type": name}
-        if thickness is not None:
-            properties["thickness_mm"] = float(thickness)
-    else:
-        properties = {"material_type": name}
-    return MaterialRecord(id=package.id, family=family, name=name, properties=properties, notes=str(package.data.get("notes", "")))
+    return MaterialRecord(id=package.id, family=MaterialFamily.OTHER, name=name)
 
 
-def profile_key(data: dict[str, Any]) -> tuple[str, str, str, str, str]:
+def profile_key(data: dict[str, Any]) -> tuple[str, str, str, str, str, str]:
     """The identity used for safe imports: exact variable duplicates are skipped."""
-    normalized = normalize_profile_data(data)
-    return tuple(str(normalized.get(key, "")).strip().lower() for key in ("material_name", "conversion", "direction", "speed", "power"))
+    normalized = validate_profile_data(data)
+    return tuple(str(normalized.get(key, "")).strip().lower() for key in ("material_name", "conversion", "direction", "speed", "power", "quality"))
 
 
 def profile_id(data: dict[str, Any]) -> str:
-    normalized = normalize_profile_data(data)
+    normalized = validate_profile_data(data)
     seed = "|".join(str(normalized.get(key, "")) for key in ("material_name", "conversion", "direction", "speed", "power", "quality"))
     return f"{_slug(str(normalized['material_name']))}_{sha1(seed.encode()).hexdigest()[:12]}"
 
 
-def write_package(vault: Path, data: dict[str, Any], image_source: Path | None = None) -> MaterialPackage:
+def write_package(vault: Path, data: dict[str, Any]) -> MaterialPackage:
     """Create a self-contained folder. Its JSON remains useful outside this app."""
-    normalized = normalize_profile_data(data)
-    required = ("material_name", "conversion", "direction", "speed", "power", "quality")
-    missing = [key for key in required if normalized.get(key) in (None, "")]
-    if missing:
-        raise ValueError(f"Missing material fields: {', '.join(missing)}.")
-    payload = dict(normalized)
-    supplied_id = bool(payload.get("id"))
+    payload = validate_profile_data(data)
     payload.setdefault("id", profile_id(payload))
-    payload.setdefault("thickness_mm", 0)
-    payload.setdefault("operation", "Engrave")
-    payload.setdefault("passes", 1)
-    payload.setdefault("laser_wattage", "Unspecified")
-    thickness_label = f"{float(payload['thickness_mm']):g}"
-    base_folder = f"{_slug(str(payload['material_name']))}_{thickness_label}mm_{_slug(str(payload['operation']))}"
-    folder = vault / (base_folder if supplied_id else f"{base_folder}_{_slug(str(payload['id']))}")
+    folder = vault / _slug(str(payload["id"]))
     folder.mkdir(parents=True, exist_ok=True)
-    payload["image_filename"] = PREVIEW_FILENAME if image_source else payload.get("image_filename", "")
-    if image_source:
-        source = Path(image_source)
-        if not source.is_file():
-            raise ValueError("The selected preview image does not exist.")
-        shutil.copy2(source, folder / PREVIEW_FILENAME)
     (folder / PACKAGE_FILENAME).write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return MaterialPackage(folder, payload)
 
@@ -162,10 +132,25 @@ def scan_packages(vault: Path) -> list[MaterialPackage]:
     for source in vault.glob(f"*/{PACKAGE_FILENAME}"):
         try:
             payload = json.loads(source.read_text(encoding="utf-8"))
-            if not all(key in payload for key in ("id", "material_name", "operation")):
+            if not all(key in payload for key in ("id", "material_name")):
                 continue
-            packages.append(MaterialPackage(source.parent, payload))
-        except (OSError, json.JSONDecodeError):
+            legacy = not all(key in payload for key in ("conversion", "direction", "speed", "power", "quality"))
+            readable = dict(payload)
+            if legacy:
+                if _coalesce(readable, *LEGACY_FIELD_ALIASES["direction"]) is None:
+                    preset = _coalesce(readable, "preset", "variant_name")
+                    readable["direction"] = (
+                        preset
+                        if str(preset).casefold() in {"horizontal", "vertical", "diagonal", "bidirectional"}
+                        else "Horizontal"
+                    )
+                if readable.get("quality") in (None, ""):
+                    readable["quality"] = _coalesce(readable, "quality_lines_mm") or 15
+            normalized = validate_profile_data(readable)
+            normalized["id"] = str(payload["id"])
+            normalized["scope"] = payload.get("scope") if payload.get("scope") in ("global", "user") else "global"
+            packages.append(MaterialPackage(source.parent, normalized))
+        except (OSError, json.JSONDecodeError, ValueError):
             continue
     return sorted(packages, key=lambda package: str(package.data["material_name"]).lower())
 
@@ -256,13 +241,9 @@ def clear_experiment_draft(root: Path, draft_id: str) -> None:
         source.unlink()
 
 
-def update_package(package: MaterialPackage, data: dict[str, Any], image_source: Path | None = None) -> MaterialPackage:
+def update_package(package: MaterialPackage, data: dict[str, Any]) -> MaterialPackage:
     """Update one profile in place so its portable folder identity remains stable."""
-    payload = {**package.data, **data, "id": package.id}
-    payload["image_filename"] = package.data.get("image_filename", "")
-    if image_source:
-        shutil.copy2(image_source, package.folder / PREVIEW_FILENAME)
-        payload["image_filename"] = PREVIEW_FILENAME
+    payload = validate_profile_data({**package.data, **data, "id": package.id})
     (package.folder / PACKAGE_FILENAME).write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return MaterialPackage(package.folder, payload)
 
@@ -272,10 +253,10 @@ def delete_package(package: MaterialPackage) -> None:
     shutil.rmtree(package.folder)
 
 
-def find_profile(vault: Path, material_name: str, conversion_model: str, variant_name: str) -> MaterialPackage | None:
-    """Locate the published preset identity used by the overwrite confirmation."""
+def find_profile(vault: Path, data: dict[str, Any]) -> MaterialPackage | None:
+    """Find an exact duplicate across material and the five supported settings."""
+    target = profile_key(data)
     for package in scan_packages(vault):
-        data = package.data
-        if (str(data.get("material_name", "")).casefold(), str(data.get("conversion_model", "")).casefold(), str(data.get("variant_name", "Base")).casefold()) == (material_name.casefold(), conversion_model.casefold(), variant_name.casefold()):
+        if profile_key(package.data) == target:
             return package
     return None
