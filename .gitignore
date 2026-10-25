@@ -6,3 +6,5 @@ __pycache__/
 .pytest-work/
 /laser_knowledge_system.db
 /materials_vault/
+/open_records.json
+/open_experiments.json
