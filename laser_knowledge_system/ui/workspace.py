@@ -202,19 +202,19 @@ class MaterialFormDialog(QDialog):
     def __init__(self, root, parent=None, draft=None):
         super().__init__(parent); self.root=Path(root); self.setWindowTitle("Record material variables"); self.setMinimumWidth(520); self.image_path=None; self.pending=list((draft or {}).get("batch_profiles",[]))
         layout=QVBoxLayout(self); intro=QLabel("Record a tested variable set"); intro.setObjectName("title"); layout.addWidget(intro); helper=QLabel("This draft remains in Records until you save it into the library."); helper.setObjectName("subtitle"); helper.setWordWrap(True); layout.addWidget(helper)
-        form=QFormLayout(); self.name=QLineEdit(); self.name.setPlaceholderText("e.g. Plywood"); self.thickness=QDoubleSpinBox(); self.thickness.setRange(0,500); self.thickness.setValue(3); self.operation=QComboBox(); self.operation.addItems(["Engrave","Cut","Mark","Score"]); self.model=QComboBox(); self.model.addItems(["Floyd","Jarvis","Atkinson","Dithering","Vectorizing","Line to Line","Threshold"]); self.speed=QSpinBox(); self.speed.setRange(1,100000); self.speed.setValue(1200); self.power=QSpinBox(); self.power.setRange(1,100); self.power.setValue(80); self.blur=QSpinBox(); self.blur.setRange(0,100); self.brightness=QSpinBox(); self.brightness.setRange(-100,100); self.contrast=QSpinBox(); self.contrast.setRange(-100,100); self.dither=QLineEdit(); self.dither.setPlaceholderText("Optional method or pattern"); self.passes=QSpinBox(); self.passes.setRange(1,100); self.passes.setValue(1); self.wattage=QLineEdit("Unspecified"); self.notes=QTextEdit(); self.notes.setMinimumHeight(72); self.image_label=QLabel("No result image selected")
-        fields=(("Material name *",self.name),("Thickness (mm)",self.thickness),("Operation",self.operation),("Conversion type *",self.model),("Speed (mm/min) *",self.speed),("Power (%) *",self.power),("Blur",self.blur),("Brightness",self.brightness),("Contrast",self.contrast),("Dithering method",self.dither),("Passes",self.passes),("Laser wattage",self.wattage),("Notes",self.notes))
+        form=QFormLayout(); self.name=QLineEdit(); self.name.setPlaceholderText("e.g. Plywood"); self.conversion=QComboBox(); self.conversion.addItems(["1-bit BW Dither","Floyd-Steinberg","Jarvis","Stucki","Centerline","Pass-through"]); self.direction=QComboBox(); self.direction.addItems(["Horizontal","Vertical","Diagonal","Bidirectional"]); self.speed=QSpinBox(); self.speed.setRange(1,100000); self.speed.setValue(1200); self.power=QSpinBox(); self.power.setRange(1,100); self.power.setValue(80); self.quality=QDoubleSpinBox(); self.quality.setRange(0.1,100); self.quality.setValue(15); self.notes=QTextEdit(); self.notes.setMinimumHeight(72); self.image_label=QLabel("No result image selected")
+        fields=(("Material name *",self.name),("Conversion *",self.conversion),("Direction *",self.direction),("Speed (mm/min) *",self.speed),("Power (%) *",self.power),("Quality *",self.quality),("Notes",self.notes))
         for label,widget in fields: form.addRow(label,widget)
         layout.addLayout(form); choose=QPushButton("Choose result image"); choose.setObjectName("secondary"); choose.clicked.connect(self._choose_image); image_row=QHBoxLayout(); image_row.addWidget(choose); image_row.addWidget(self.image_label,stretch=1); layout.addLayout(image_row); actions=QHBoxLayout(); self.add_another=QPushButton(); self.add_another.setObjectName("secondary"); self.add_another.clicked.connect(self._queue_current); actions.addWidget(self.add_another); actions.addStretch(); buttons=QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel|QDialogButtonBox.StandardButton.Save); buttons.accepted.connect(self.accept); buttons.rejected.connect(self.reject); actions.addWidget(buttons); layout.addLayout(actions); self._update_queue_label()
         if draft:self._apply_draft(draft)
-        for widget in (self.name,self.thickness,self.operation,self.model,self.speed,self.power,self.blur,self.brightness,self.contrast,self.dither,self.passes,self.wattage,self.notes):
+        for widget in (self.name,self.conversion,self.direction,self.speed,self.power,self.quality,self.notes):
             signal=widget.textChanged if isinstance(widget,(QLineEdit,QTextEdit)) else widget.currentTextChanged if isinstance(widget,QComboBox) else widget.valueChanged
             signal.connect(self._save_draft)
     def _choose_image(self):
         path,_=QFileDialog.getOpenFileName(self,"Choose material preview","","Images (*.png *.jpg *.jpeg *.bmp *.webp)")
         if path:self.image_path=Path(path); self.image_label.setText(self.image_path.name); self._save_draft()
     def _apply_draft(self,draft):
-        self.name.setText(str(draft.get("material_name",""))); self.thickness.setValue(float(draft.get("thickness_mm",3))); self.operation.setCurrentText(str(draft.get("operation","Engrave"))); self.model.setCurrentText(str(draft.get("conversion_model","Floyd"))); self.speed.setValue(int(draft.get("speed_mm_min",1200))); self.power.setValue(int(draft.get("power_percent",80))); self.blur.setValue(int(draft.get("blur",0))); self.brightness.setValue(int(draft.get("brightness",0))); self.contrast.setValue(int(draft.get("contrast",0))); self.dither.setText(str(draft.get("dithering_method",""))); self.notes.setPlainText(str(draft.get("notes","")))
+        self.name.setText(str(draft.get("material_name",""))); self.conversion.setCurrentText(str(draft.get("conversion", draft.get("conversion_model","Floyd-Steinberg")))); self.direction.setCurrentText(str(draft.get("direction", draft.get("preset","Horizontal")))); self.speed.setValue(int(draft.get("speed", draft.get("speed_mm_min",1200)))); self.power.setValue(int(draft.get("power", draft.get("power_percent",80)))); self.quality.setValue(float(draft.get("quality", draft.get("quality_lines_mm",15)))); self.notes.setPlainText(str(draft.get("notes","")))
     def _save_draft(self):
         save_open_record(self.root,{**self.payload(),"batch_profiles":self.pending})
     def _update_queue_label(self):
@@ -223,10 +223,10 @@ class MaterialFormDialog(QDialog):
         profile=self.payload()
         if not profile["material_name"]:
             QMessageBox.information(self,"Material name required","Enter the shared material name before adding another profile."); self.name.setFocus(); return
-        self.pending.append(profile); self.model.setCurrentIndex(0); self.speed.setValue(1200); self.power.setValue(80); self.blur.setValue(0); self.brightness.setValue(0); self.contrast.setValue(0); self.dither.clear(); self.notes.clear(); self.image_path=None; self.image_label.setText("No result image selected"); self._update_queue_label(); self._save_draft()
+        self.pending.append(profile); self.conversion.setCurrentIndex(0); self.direction.setCurrentIndex(0); self.speed.setValue(1200); self.power.setValue(80); self.quality.setValue(15); self.notes.clear(); self.image_path=None; self.image_label.setText("No result image selected"); self._update_queue_label(); self._save_draft()
     def payload(self):
         name=self.name.text().strip()
-        return {"scope":"user","material_name":name,"thickness_mm":self.thickness.value(),"operation":self.operation.currentText(),"conversion_model":self.model.currentText(),"speed_mm_min":self.speed.value(),"power_percent":self.power.value(),"blur":self.blur.value(),"brightness":self.brightness.value(),"contrast":self.contrast.value(),"dithering_method":self.dither.text().strip(),"passes":self.passes.value(),"laser_wattage":self.wattage.text().strip(),"notes":self.notes.toPlainText().strip()}
+        return {"scope":"user","material_name":name,"conversion":self.conversion.currentText(),"direction":self.direction.currentText(),"speed":self.speed.value(),"power":self.power.value(),"quality":self.quality.value(),"notes":self.notes.toPlainText().strip()}
     def all_payloads(self):
         return [*self.pending,self.payload()]
 
@@ -255,12 +255,12 @@ class MaterialLibraryPage(QWidget):
         for package in self.packages:
             name=str(package.data.get("material_name","")).strip();
             if name and (not query or query in name.lower()): grouped.setdefault(name,[]).append(package)
-        self.status.setText(f"{len(grouped)} materials · {len(self.packages)} tested variable sets")
+        self.status.setText(f"{len(grouped)} materials · {len(self.packages)} tested profiles")
         while self.material_buttons.count():
             item=self.material_buttons.takeAt(0)
             if item.widget():item.widget().deleteLater()
         for name,profiles in sorted(grouped.items()):
-            button=QPushButton(f"{name}   ·   {len(profiles)} saved presets"); button.setObjectName("secondary"); button.setMinimumHeight(48); button.clicked.connect(lambda _,value=name:self.open_detail(value)); self.material_buttons.addWidget(button)
+            button=QPushButton(name); button.setObjectName("secondary"); button.setMinimumHeight(48); button.clicked.connect(lambda _,value=name:self.open_detail(value)); self.material_buttons.addWidget(button)
     def add_package(self):
         dialog=MaterialFormDialog(self.vault.parent,self,load_open_record(self.vault.parent))
         if dialog.exec()!=QDialog.DialogCode.Accepted:return
@@ -279,29 +279,42 @@ class MaterialLibraryPage(QWidget):
     def open_detail(self, material_name):
         settings=QSettings("LaserVariableLibrary","LaserVariableLibrary"); recent=[name for name in settings.value("recent_materials",[],type=list) if name!=material_name]; settings.setValue("recent_materials",[material_name,*recent][:5]); self._render_recent()
         profiles=[package for package in self.packages if package.data.get("material_name")==material_name]
-        dialog=QDialog(self); dialog.setWindowTitle(str(material_name)); dialog.setMinimumSize(860,460); layout=QVBoxLayout(dialog); heading=QLabel(str(material_name)); heading.setObjectName("title"); layout.addWidget(heading); helper=QLabel("Each row is a saved preset. Select one to edit, export, or delete."); helper.setObjectName("subtitle"); layout.addWidget(helper); table=QTableWidget(0,7); table.setHorizontalHeaderLabels(["Conversion","Preset","Speed","Power","Blur","Brightness","Contrast"]); table.verticalHeader().setVisible(False); table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows); table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        dialog=QDialog(self); dialog.setWindowTitle(str(material_name)); dialog.setMinimumSize(760,420); layout=QVBoxLayout(dialog); heading=QLabel(str(material_name)); heading.setObjectName("title"); layout.addWidget(heading); helper=QLabel("Tap a profile card to edit or delete it. Direction is the preset."); helper.setObjectName("subtitle"); layout.addWidget(helper)
+        container=QVBoxLayout(); container.setSpacing(12)
         for package in profiles:
-            row=table.rowCount(); table.insertRow(row); data=package.data
-            for column,key in enumerate(("conversion_model","variant_name","speed_mm_min","power_percent","blur","brightness","contrast")): table.setItem(row,column,QTableWidgetItem(str(data.get(key,"—"))))
-            table.item(row,0).setData(Qt.ItemDataRole.UserRole,package)
-        layout.addWidget(table); actions=QHBoxLayout(); export=QPushButton("Send variables to LaserGRBL"); export.setObjectName("primary"); export.clicked.connect(lambda:self.export_grbl(table,dialog)); actions.addWidget(export); edit=QPushButton("Edit selected"); edit.setObjectName("secondary"); edit.clicked.connect(lambda:self.edit_profile(table,dialog)); actions.addWidget(edit); remove=QPushButton("Delete selected"); remove.setObjectName("secondary"); remove.clicked.connect(lambda:self.delete_profile(table,dialog)); actions.addWidget(remove); actions.addStretch(); close=QDialogButtonBox(QDialogButtonBox.StandardButton.Close); close.rejected.connect(dialog.reject); actions.addWidget(close); layout.addLayout(actions); dialog.exec()
+            frame,inner=card(); title=QLabel(f"{package.data.get('conversion', '—')} · {package.data.get('direction', '—')}"); title.setObjectName("section"); inner.addWidget(title)
+            grid=QGridLayout(); row=0
+            for key,label in (("conversion","Conversion"),("direction","Direction"),("speed","Speed"),("power","Power"),("quality","Quality")):
+                key_label=QLabel(f"{label}:"); key_label.setObjectName("muted"); value=QLabel(str(package.data.get(key, "—"))); value.setStyleSheet("font-weight:600;")
+                grid.addWidget(key_label,row,0); grid.addWidget(value,row,1); row += 1
+            inner.addLayout(grid); actions=QHBoxLayout(); select=QPushButton("Select"); select.setObjectName("secondary"); select.clicked.connect(lambda _,pkg=package: [dialog.setProperty("selected_package", pkg), dialog.accept()])
+            edit=QPushButton("Edit"); edit.setObjectName("secondary"); edit.clicked.connect(lambda _,pkg=package:self.edit_profile(pkg,dialog))
+            remove=QPushButton("Delete"); remove.setObjectName("secondary"); remove.clicked.connect(lambda _,pkg=package:self.delete_profile(pkg,dialog))
+            actions.addWidget(select); actions.addWidget(edit); actions.addWidget(remove); inner.addLayout(actions); container.addWidget(frame)
+        widget=QWidget(); widget.setLayout(container); scroll=QScrollArea(); scroll.setWidgetResizable(True); scroll.setWidget(widget); layout.addWidget(scroll, stretch=1)
+        actions=QHBoxLayout(); close=QDialogButtonBox(QDialogButtonBox.StandardButton.Close); close.rejected.connect(dialog.reject); actions.addWidget(close); layout.addLayout(actions); dialog.exec()
     def export_grbl(self,table,dialog):
         if table.currentRow()<0: QMessageBox.information(dialog,"Choose a version","Select a tested variable set first."); return
         package=table.item(table.currentRow(),0).data(Qt.ItemDataRole.UserRole); target,_=QFileDialog.getSaveFileName(dialog,"Save LaserGRBL settings","lasergrbl_settings.gcode","G-code (*.gcode)")
         if not target:return
-        data=package.data; Path(target).write_text(f"; Laser Library: {data['material_name']} / {data['conversion_model']}\n; Speed {data['speed_mm_min']} mm/min, Power {data['power_percent']}%\nM3 S{data['power_percent'] * 10}\nG1 F{data['speed_mm_min']}\n; Import this header/settings into LaserGRBL before running your job.\n",encoding="utf-8"); QMessageBox.information(dialog,"LaserGRBL file saved",f"Saved {Path(target).name}. Review it in LaserGRBL before sending it to your machine.")
-    def edit_profile(self,table,parent):
-        if table.currentRow()<0: QMessageBox.information(parent,"Choose a profile","Select a variable set to edit."); return
-        package=table.item(table.currentRow(),0).data(Qt.ItemDataRole.UserRole); editor=MaterialFormDialog(self.vault.parent,parent,package.data)
+        data=package.data; conversion = data.get("conversion") or data.get("conversion_model") or "Custom"; speed = data.get("speed") or data.get("speed_mm_min") or 0; power = data.get("power") or data.get("power_percent") or 0; Path(target).write_text(f"; Laser Library: {data['material_name']} / {conversion}\n; Speed {speed} mm/min, Power {power}%\nM3 S{int(float(power) * 10)}\nG1 F{speed}\n; Import this header/settings into LaserGRBL before running your job.\n",encoding="utf-8"); QMessageBox.information(dialog,"LaserGRBL file saved",f"Saved {Path(target).name}. Review it in LaserGRBL before sending it to your machine.")
+    def edit_profile(self,selection,parent):
+        package = selection
+        if hasattr(selection, "currentRow"):
+            if selection.currentRow()<0: QMessageBox.information(parent,"Choose a profile","Select a variable set to edit."); return
+            package = selection.item(selection.currentRow(),0).data(Qt.ItemDataRole.UserRole)
+        editor=MaterialFormDialog(self.vault.parent,parent,package.data)
         if editor.exec()!=QDialog.DialogCode.Accepted:return
         try:
             payload=editor.payload(); payload["scope"]=package.data.get("scope", "global")
             update_package(package,payload,editor.image_path); self.refresh(); parent.accept()
         except (OSError,ValueError) as error: QMessageBox.warning(parent,"Could not update profile",str(error))
-    def delete_profile(self,table,parent):
-        if table.currentRow()<0: QMessageBox.information(parent,"Choose a profile","Select a variable set to delete."); return
-        package=table.item(table.currentRow(),0).data(Qt.ItemDataRole.UserRole)
-        if QMessageBox.question(parent,"Delete profile",f"Delete {package.data.get('material_name')} / {package.data.get('conversion_model')}? This removes its portable folder.",QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No)!=QMessageBox.StandardButton.Yes:return
+    def delete_profile(self,selection,parent):
+        package = selection
+        if hasattr(selection, "currentRow"):
+            if selection.currentRow()<0: QMessageBox.information(parent,"Choose a profile","Select a variable set to delete."); return
+            package = selection.item(selection.currentRow(),0).data(Qt.ItemDataRole.UserRole)
+        if QMessageBox.question(parent,"Delete profile",f"Delete {package.data.get('material_name')} / {package.data.get('conversion', package.data.get('conversion_model', 'Custom'))}? This removes its portable folder.",QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No)!=QMessageBox.StandardButton.Yes:return
         try: delete_package(package); self.refresh(); parent.accept()
         except OSError as error: QMessageBox.warning(parent,"Could not delete profile",str(error))
 
@@ -375,17 +388,16 @@ class ExperimentPage(QWidget):
     def save_preset(self):
         row=self.tests.currentRow()
         if row<0:self.status.setText("Add and select a test row to publish."); return
-        stored=self.tests.item(row,0).data(Qt.ItemDataRole.UserRole) or {}; data=dict(stored.get("parameters",{})); data.update({"scope":"global","material_name":self.tests.item(row,1).text().strip(),"conversion_model":self.tests.item(row,2).text().strip(),"speed_mm_min":int(self.tests.item(row,3).text()),"power_percent":int(self.tests.item(row,4).text()),"notes":self.tests.item(row,6).text()})
-        name,ok=QInputDialog.getText(self,"Name winning preset","Preset name (for example: Dark, Light, Fine Detail):"); name=name.strip()
-        if not ok:return
-        if not data["material_name"] or not data["conversion_model"] or not name:self.status.setText("Every published test needs material, conversion type, and a preset name."); return
-        data["variant_name"]=name
+        stored=self.tests.item(row,0).data(Qt.ItemDataRole.UserRole) or {}; data=dict(stored.get("parameters",{})); data.update({"scope":"global","material_name":self.tests.item(row,1).text().strip(),"conversion":self.tests.item(row,2).text().strip(),"speed":int(self.tests.item(row,3).text()),"power":int(self.tests.item(row,4).text()),"quality":float(data.get("quality",15)),"notes":self.tests.item(row,6).text()})
+        direction = str(data.get("direction") or self.direction.currentText() or "Horizontal")
+        data["direction"] = direction
+        if not data["material_name"] or not data["conversion"]: self.status.setText("Every published test needs material and conversion type."); return
         try:
-            existing=find_profile(self.vault,data["material_name"],data["conversion_model"],name)
-            if existing and QMessageBox.question(self,"Overwrite global preset?",f"{data['material_name']} / {data['conversion_model']} / {name} already exists. Replace it with this experiment?",QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No)!=QMessageBox.StandardButton.Yes:return
+            existing=find_profile(self.vault,data["material_name"],data["conversion"],direction)
+            if existing and QMessageBox.question(self,"Overwrite global record?",f"{data['material_name']} / {data['conversion']} / {direction} already exists. Replace it with this experiment?",QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No)!=QMessageBox.StandardButton.Yes:return
             if existing:update_package(existing,data)
             else:write_package(self.vault,data)
-            sync_vault(self.repo,self.vault); self.status.setText(f"Published {data['material_name']} / {data['conversion_model']} / {name} to the global Library."); self.refresh()
+            sync_vault(self.repo,self.vault); self.status.setText(f"Published {data['material_name']} / {data['conversion']} / {direction} to the global Library."); self.refresh()
         except (OSError,ValueError,RepositoryError) as error:self.status.setText(str(error))
     def clear_batch(self):
         if self.tests.rowCount() and QMessageBox.question(self,"Clear open batch?","Remove this unfinished experiment batch? Published presets will not be deleted.",QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No)!=QMessageBox.StandardButton.Yes:return
@@ -399,27 +411,29 @@ class ExperimentPage(QWidget):
 class RecordsPage(QWidget):
     """Persistent incomplete-record queue; no in-progress variables silently disappear."""
     def __init__(self, root, continue_record):
-        super().__init__(); self.root,self.continue_record=Path(root),continue_record; self.vault=vault_path(self.root); layout=QVBoxLayout(self); layout.setContentsMargins(36,32,36,32); layout.setSpacing(18); title=QLabel("Records"); title.setObjectName("title"); layout.addWidget(title); self.message=QLabel(); self.message.setObjectName("subtitle"); self.message.setWordWrap(True); layout.addWidget(self.message); self.continue_button=QPushButton("Continue open record"); self.continue_button.setObjectName("primary"); self.continue_button.clicked.connect(continue_record); layout.addWidget(self.continue_button,alignment=Qt.AlignmentFlag.AlignLeft); self.table=QTableWidget(0,4); self.table.setHorizontalHeaderLabels(["Your material","Conversion","Speed","Power"]); self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers); self.table.verticalHeader().setVisible(False); self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch); layout.addWidget(self.table,stretch=1); self.refresh()
+        super().__init__(); self.root,self.continue_record=Path(root),continue_record; self.vault=vault_path(self.root); layout=QVBoxLayout(self); layout.setContentsMargins(36,32,36,32); layout.setSpacing(18); title=QLabel("Records"); title.setObjectName("title"); layout.addWidget(title); self.message=QLabel(); self.message.setObjectName("subtitle"); self.message.setWordWrap(True); layout.addWidget(self.message); self.continue_button=QPushButton("Continue open record"); self.continue_button.setObjectName("primary"); self.continue_button.clicked.connect(continue_record); layout.addWidget(self.continue_button,alignment=Qt.AlignmentFlag.AlignLeft); self.table=QTableWidget(0,5); self.table.setHorizontalHeaderLabels(["Material","Conversion","Direction","Speed","Power"]); self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers); self.table.verticalHeader().setVisible(False); self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch); layout.addWidget(self.table,stretch=1); self.refresh()
     def refresh(self):
-        draft=load_open_record(self.root); exists=bool(draft and draft.get("material_name")); self.continue_button.setEnabled(exists); profiles=[package for package in scan_packages(self.vault) if package.data.get("scope")=="user"]; self.message.setText(f"Unfinished record for {draft.get('material_name')}. Continue it or save it to finalise the material profile." if exists else f"{len(profiles)} of your saved value records."); self.table.setRowCount(0)
+        draft=load_open_record(self.root); exists=bool(draft and draft.get("material_name")); self.continue_button.setEnabled(exists); profiles=[package for package in scan_packages(self.vault) if package.data.get("scope")=="user"]; self.message.setText(f"Continue unfinished record for {draft.get('material_name')}?" if exists else f"{len(profiles)} saved drafts waiting for final approval."); self.table.setRowCount(0)
         for package in profiles:
             row=self.table.rowCount(); self.table.insertRow(row); data=package.data
-            for column,key in enumerate(("material_name","conversion_model","speed_mm_min","power_percent")):self.table.setItem(row,column,QTableWidgetItem(str(data.get(key,"—"))))
+            values=(data.get("material_name","—"), data.get("conversion") or data.get("conversion_model") or "—", data.get("direction") or "—", data.get("speed") or data.get("speed_mm_min") or "—", data.get("power") or data.get("power_percent") or "—")
+            for column,value in enumerate(values): self.table.setItem(row,column,QTableWidgetItem(str(value)))
 
 
 class MainWindow(QMainWindow):
     def __init__(self,repo=None):
-        super().__init__(); self.setWindowTitle("Laser Variable Library"); self.setMinimumSize(680,500); self.resize(1180,760); shell=QWidget(); root=QHBoxLayout(shell); root.setContentsMargins(0,0,0,0); root.setSpacing(0); sidebar=QFrame(); sidebar.setObjectName("sidebar"); sidebar.setMinimumWidth(150); sidebar.setMaximumWidth(220); side=QVBoxLayout(sidebar); side.setContentsMargins(18,24,18,24); brand=QLabel("Laser Material Library"); brand.setObjectName("brand"); brand.setWordWrap(True); side.addWidget(brand); sub=QLabel("Offline tested-variable database"); sub.setObjectName("muted"); side.addWidget(sub); side.addSpacing(28); self.library_button=QPushButton("Library"); self.record_button=QPushButton("Records"); self.experiment_button=QPushButton("Experiments"); self.material_button=self.library_button
-        for button in (self.library_button,self.record_button,self.experiment_button):button.setObjectName("nav");button.setCheckable(True);side.addWidget(button)
-        side.addStretch(); local=QLabel("LOCAL MODE\nYour data stays on this computer."); local.setObjectName("muted"); side.addWidget(local); root.addWidget(sidebar)
+        super().__init__(); self.setWindowTitle("Laser Variable Library"); self.setMinimumSize(680,500); self.resize(1180,760); shell=QWidget(); root=QHBoxLayout(shell); root.setContentsMargins(0,0,0,0); root.setSpacing(0); sidebar=QFrame(); sidebar.setObjectName("sidebar"); sidebar.setMinimumWidth(150); sidebar.setMaximumWidth(220); side=QVBoxLayout(sidebar); side.setContentsMargins(18,24,18,24); brand=QLabel("Laser Material Library"); brand.setObjectName("brand"); brand.setWordWrap(True); side.addWidget(brand); sub=QLabel("Offline tested-variable database"); sub.setObjectName("muted"); side.addWidget(sub); side.addSpacing(28); self.library_button=QPushButton("Library"); self.record_button=QPushButton("Record"); self.stock_button=QPushButton("Stock"); self.new_material_button=QPushButton("+ New material"); self.new_material_button.setObjectName("nav"); self.new_material_button.clicked.connect(self.new_material); self.material_button=self.library_button
+        for button in (self.library_button,self.record_button,self.stock_button):button.setObjectName("nav");button.setCheckable(True);side.addWidget(button)
+        side.addWidget(self.new_material_button); side.addStretch(); local=QLabel("LOCAL MODE\nYour data stays on this computer."); local.setObjectName("muted"); side.addWidget(local); root.addWidget(sidebar)
         if repo is None:database=DatabaseManager("sqlite:///:memory:");database.initialize();repo=SQLiteRepository(database)
-        self.repo=repo;self.pages=QStackedWidget();self.materials=MaterialLibraryPage(repo);self.records=RecordsPage(Path.cwd(),self.continue_record);self.experiments=ExperimentPage(repo,Path.cwd());self.pages.addWidget(self._scrollable(self.materials));self.pages.addWidget(self._scrollable(self.records));self.pages.addWidget(self._scrollable(self.experiments));root.addWidget(self.pages,stretch=1);self.setCentralWidget(shell);self.library_button.clicked.connect(self.show_materials);self.record_button.clicked.connect(self.show_records);self.experiment_button.clicked.connect(self.show_experiments);self.show_materials(); draft=load_open_record(Path.cwd())
-        if draft and draft.get("material_name") and QMessageBox.question(self,"Unfinished record",f"You have an unfinished record for {draft['material_name']}. Continue it?",QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No)==QMessageBox.StandardButton.Yes:self.continue_record()
+        self.repo=repo;self.pages=QStackedWidget();self.materials=MaterialLibraryPage(repo);self.records=RecordsPage(Path.cwd(),self.continue_record);self.experiments=ExperimentPage(repo,Path.cwd());self.pages.addWidget(self._scrollable(self.materials));self.pages.addWidget(self._scrollable(self.records));self.pages.addWidget(self._scrollable(self.experiments));root.addWidget(self.pages,stretch=1);self.setCentralWidget(shell);self.library_button.clicked.connect(self.show_materials);self.record_button.clicked.connect(self.show_records);self.stock_button.clicked.connect(self.show_experiments);self.show_materials(); draft=load_open_record(Path.cwd())
+        if draft and draft.get("material_name") and QMessageBox.question(self,"Continue unfinished record for?",f"You have an unfinished record for {draft['material_name']}. Continue it?",QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No)==QMessageBox.StandardButton.Yes:self.continue_record()
     def _scrollable(self,widget):
         scroll=QScrollArea(); scroll.setWidgetResizable(True); scroll.setWidget(widget); return scroll
-    def show_materials(self):self.materials.refresh();self.pages.setCurrentIndex(0);self.library_button.setChecked(True);self.record_button.setChecked(False);self.experiment_button.setChecked(False)
-    def show_records(self):self.records.refresh();self.pages.setCurrentIndex(1);self.library_button.setChecked(False);self.record_button.setChecked(True);self.experiment_button.setChecked(False)
-    def show_experiments(self):self.experiments.refresh();self.pages.setCurrentIndex(2);self.library_button.setChecked(False);self.record_button.setChecked(False);self.experiment_button.setChecked(True)
+    def show_materials(self):self.materials.refresh();self.pages.setCurrentIndex(0);self.library_button.setChecked(True);self.record_button.setChecked(False);self.stock_button.setChecked(False)
+    def show_records(self):self.records.refresh();self.pages.setCurrentIndex(1);self.library_button.setChecked(False);self.record_button.setChecked(True);self.stock_button.setChecked(False)
+    def show_experiments(self):self.experiments.refresh();self.pages.setCurrentIndex(2);self.library_button.setChecked(False);self.record_button.setChecked(False);self.stock_button.setChecked(True)
+    def new_material(self): self.show_materials(); self.materials.add_package()
     def continue_record(self):self.show_materials();self.materials.add_package()
     def import_block(self):
         path,_=QFileDialog.getOpenFileName(self,"Open shared experiment block","","Laser experiment blocks (*.laserblock)")

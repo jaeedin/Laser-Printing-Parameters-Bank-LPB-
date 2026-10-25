@@ -18,6 +18,42 @@ PACKAGE_FILENAME = "data.json"
 PREVIEW_FILENAME = "preview.png"
 DRAFTS_FILENAME = "open_records.json"
 EXPERIMENT_DRAFTS_FILENAME = "open_experiments.json"
+LEGACY_FIELD_ALIASES = {
+    "conversion": ("conversion", "conversion_model", "model", "algorithm"),
+    "direction": ("direction", "preset", "variant_name", "orientation"),
+    "speed": ("speed", "speed_mm_min", "speed_mm_s"),
+    "power": ("power", "power_percent", "power_w"),
+    "quality": ("quality", "quality_lines_mm", "quality_percent"),
+}
+
+
+def _coalesce(data: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = data.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def normalize_profile_data(data: dict[str, Any]) -> dict[str, Any]:
+    """Normalize new canonical fields while accepting legacy names for compatibility."""
+    payload = dict(data)
+    payload["material_name"] = str(payload.get("material_name", "")).strip()
+    payload["conversion"] = str(_coalesce(payload, *LEGACY_FIELD_ALIASES["conversion"]) or "Pass-through")
+    payload["direction"] = str(_coalesce(payload, *LEGACY_FIELD_ALIASES["direction"]) or "Horizontal")
+    payload["speed"] = _coalesce(payload, *LEGACY_FIELD_ALIASES["speed"]) or 0
+    payload["power"] = _coalesce(payload, *LEGACY_FIELD_ALIASES["power"]) or 0
+    payload["quality"] = _coalesce(payload, *LEGACY_FIELD_ALIASES["quality"]) or 0
+    for alias in ("conversion_model", "preset", "variant_name", "model", "algorithm", "speed_mm_min", "speed_mm_s", "power_percent", "power_w", "quality_lines_mm", "quality_percent", "blur", "brightness", "contrast", "torque", "dark_light"):
+        payload.pop(alias, None)
+    payload.pop("blur", None)
+    payload.pop("brightness", None)
+    payload.pop("contrast", None)
+    payload.pop("torque", None)
+    payload.pop("presets", None)
+    payload.pop("dark_light", None)
+    payload.pop("light_dark", None)
+    return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,23 +116,26 @@ def _record_from_package(package: MaterialPackage) -> MaterialRecord:
     return MaterialRecord(id=package.id, family=family, name=name, properties=properties, notes=str(package.data.get("notes", "")))
 
 
-def profile_key(data: dict[str, Any]) -> tuple[str, str, str, str]:
+def profile_key(data: dict[str, Any]) -> tuple[str, str, str, str, str]:
     """The identity used for safe imports: exact variable duplicates are skipped."""
-    return tuple(str(data.get(key, "")).strip().lower() for key in ("material_name", "conversion_model", "speed_mm_min", "power_percent"))
+    normalized = normalize_profile_data(data)
+    return tuple(str(normalized.get(key, "")).strip().lower() for key in ("material_name", "conversion", "direction", "speed", "power"))
 
 
 def profile_id(data: dict[str, Any]) -> str:
-    seed = "|".join(str(data.get(key, "")) for key in ("material_name", "conversion_model", "variant_name", "speed_mm_min", "power_percent", "blur", "brightness", "contrast", "dithering_method"))
-    return f"{_slug(str(data['material_name']))}_{sha1(seed.encode()).hexdigest()[:12]}"
+    normalized = normalize_profile_data(data)
+    seed = "|".join(str(normalized.get(key, "")) for key in ("material_name", "conversion", "direction", "speed", "power", "quality"))
+    return f"{_slug(str(normalized['material_name']))}_{sha1(seed.encode()).hexdigest()[:12]}"
 
 
 def write_package(vault: Path, data: dict[str, Any], image_source: Path | None = None) -> MaterialPackage:
     """Create a self-contained folder. Its JSON remains useful outside this app."""
-    required = ("material_name", "conversion_model", "speed_mm_min", "power_percent")
-    missing = [key for key in required if data.get(key) in (None, "")]
+    normalized = normalize_profile_data(data)
+    required = ("material_name", "conversion", "direction", "speed", "power", "quality")
+    missing = [key for key in required if normalized.get(key) in (None, "")]
     if missing:
         raise ValueError(f"Missing material fields: {', '.join(missing)}.")
-    payload = dict(data)
+    payload = dict(normalized)
     supplied_id = bool(payload.get("id"))
     payload.setdefault("id", profile_id(payload))
     payload.setdefault("thickness_mm", 0)
